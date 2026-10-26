@@ -18,8 +18,16 @@
 <body>
 <canvas id="c"></canvas>
 <script>
+// ===== CHANGELOG =====
+// v0.3 - Main menu (Play / Statistics / Settings), statistics counting,
+//        language (English / Russian), vibration toggle, version label.
+// v0.2 - Constant pipe spacing after Slow Motion; protection from accidental upgrade picks.
+// v0.1 - First prototype.
+const VERSION = 'v0.3';
+
 // ===== Setup =====
 const W = 360, H = 640, GROUND = 60;
+const FONT = '-apple-system, Helvetica, Arial, sans-serif';
 const cv = document.getElementById('c');
 const ctx = cv.getContext('2d');
 let scale = 1, offX = 0, offY = 0, dpr = 1;
@@ -38,23 +46,96 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// ===== Save =====
-let best = 0;
-try { best = +(localStorage.getItem('flappyrogue_best') || 0); } catch (e) {}
-function saveBest() { try { localStorage.setItem('flappyrogue_best', best); } catch (e) {} }
+// ===== Storage =====
+function loadJSON(key, def) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return Object.assign({}, def, JSON.parse(raw));
+  } catch (e) {}
+  return Object.assign({}, def);
+}
+function saveJSON(key, obj) {
+  try { localStorage.setItem(key, JSON.stringify(obj)); } catch (e) {}
+}
+
+// ===== Settings =====
+const defaultLang = (navigator.language || 'en').toLowerCase().indexOf('ru') === 0 ? 'ru' : 'en';
+const settings = loadJSON('flappyrogue_settings', { lang: defaultLang, vibration: true });
+function saveSettings() { saveJSON('flappyrogue_settings', settings); }
+
+// ===== Statistics =====
+const stats = loadJSON('flappyrogue_stats', {
+  best: 0, games: 0, totalScore: 0, upgrades: 0, flaps: 0, time: 0
+});
+try { // migrate the best score from v0.1 / v0.2
+  const oldBest = +(localStorage.getItem('flappyrogue_best') || 0);
+  if (oldBest > stats.best) stats.best = oldBest;
+} catch (e) {}
+function saveStats() { saveJSON('flappyrogue_stats', stats); }
+let saveTimer = 0;
+window.addEventListener('pagehide', saveStats);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveStats(); });
+
+// ===== Translations =====
+const I18N = {
+  en: {
+    play: 'Play', stats: 'Statistics', settings: 'Settings', back: 'Back', menu: 'Menu',
+    playAgain: 'Play again', language: 'Language', vibration: 'Vibration', on: 'On', off: 'Off',
+    noVib: 'Vibration is not supported on this device',
+    chooseUpgrade: 'Choose an upgrade', gameOver: 'Game Over', score: 'Score: {n}',
+    best: 'Best: {n}', newBest: 'New best!', upgradesLbl: 'Upgrades:',
+    upgradeIn: 'Upgrade in {n}', shieldHud: 'Shield x{n}',
+    st_best: 'Best score', st_games: 'Games played', st_total: 'Pipes passed',
+    st_avg: 'Average score', st_upgrades: 'Upgrades picked', st_flaps: 'Flaps', st_time: 'Time played',
+    h: 'h', m: 'm', s: 's',
+    up_shield_n: 'Shield', up_shield_d: 'Survive one hit',
+    up_gap_n: 'Wide Gaps', up_gap_d: 'Pipe gaps +12',
+    up_wings_n: 'Light Wings', up_wings_d: 'Lower gravity',
+    up_slow_n: 'Slow Motion', up_slow_d: 'Pipes move 10% slower',
+    up_tiny_n: 'Tiny Bird', up_tiny_d: 'Smaller hitbox'
+  },
+  ru: {
+    play: 'Играть', stats: 'Статистика', settings: 'Настройки', back: 'Назад', menu: 'Меню',
+    playAgain: 'Играть снова', language: 'Язык', vibration: 'Вибрация', on: 'Вкл', off: 'Выкл',
+    noVib: 'Вибрация не поддерживается на этом устройстве',
+    chooseUpgrade: 'Выбери улучшение', gameOver: 'Игра окончена', score: 'Счёт: {n}',
+    best: 'Рекорд: {n}', newBest: 'Новый рекорд!', upgradesLbl: 'Улучшения:',
+    upgradeIn: 'Улучшение через {n}', shieldHud: 'Щит x{n}',
+    st_best: 'Лучший счёт', st_games: 'Сыграно игр', st_total: 'Пройдено труб',
+    st_avg: 'Средний счёт', st_upgrades: 'Выбрано улучшений', st_flaps: 'Взмахов', st_time: 'Время в игре',
+    h: 'ч', m: 'мин', s: 'с',
+    up_shield_n: 'Щит', up_shield_d: 'Переживи один удар',
+    up_gap_n: 'Широкие проходы', up_gap_d: 'Проходы шире на 12',
+    up_wings_n: 'Лёгкие крылья', up_wings_d: 'Меньше гравитация',
+    up_slow_n: 'Замедление', up_slow_d: 'Трубы медленнее на 10%',
+    up_tiny_n: 'Крошка-птица', up_tiny_d: 'Хитбокс меньше'
+  }
+};
+function t(key, n) {
+  const s = (I18N[settings.lang] && I18N[settings.lang][key]) || I18N.en[key] || key;
+  return n === undefined ? s : s.replace('{n}', n);
+}
+
+// ===== Vibration =====
+function vib(pattern) {
+  if (!settings.vibration) return;
+  try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) {}
+}
 
 // ===== Game state =====
-let state = 'menu'; // menu | play | upgrade | dead
-let bird, pipes, score, spawnT, invuln, deadT, cards, p, taken, time = 0, upgradeT = 0;
+// menu | stats | settings | play | upgrade | dead
+let state = 'menu';
+let bird, pipes, score, spawnT, invuln, deadT, cards, p, taken, newBest = false;
+let time = 0, upgradeT = 0;
 
 const BASE = { gravity: 1500, flap: -430, gap: 150, speed: 130, shield: 0 };
 
 const POOL = [
-  { name: 'Shield',      desc: 'Survive one hit',          color: '#3fa7d6', apply() { p.shield++; } },
-  { name: 'Wide Gaps',   desc: 'Pipe gaps +12',            color: '#59c173', apply() { p.gap = Math.min(p.gap + 12, 210); } },
-  { name: 'Light Wings', desc: 'Lower gravity',            color: '#f2a65a', apply() { p.gravity *= 0.9; p.flap *= 0.95; } },
-  { name: 'Slow Motion', desc: 'Pipes move 10% slower',    color: '#9b6bd6', apply() { p.speed *= 0.9; } },
-  { name: 'Tiny Bird',   desc: 'Smaller hitbox',           color: '#e65f5c', apply() { bird.r = Math.max(8, bird.r * 0.85); } },
+  { id: 'shield', color: '#3fa7d6', apply() { p.shield++; } },
+  { id: 'gap',    color: '#59c173', apply() { p.gap = Math.min(p.gap + 12, 210); } },
+  { id: 'wings',  color: '#f2a65a', apply() { p.gravity *= 0.9; p.flap *= 0.95; } },
+  { id: 'slow',   color: '#9b6bd6', apply() { p.speed *= 0.9; } },
+  { id: 'tiny',   color: '#e65f5c', apply() { bird.r = Math.max(8, bird.r * 0.85); } },
 ];
 
 function resetGame() {
@@ -64,6 +145,7 @@ function resetGame() {
   spawnT = 0.9;
   invuln = 0;
   taken = [];
+  newBest = false;
   p = Object.assign({}, BASE);
 }
 resetGame();
@@ -74,10 +156,20 @@ function startGame() {
   bird.vy = p.flap;
 }
 
+function goMenu() {
+  resetGame();
+  state = 'menu';
+}
+
 function die() {
   state = 'dead';
   deadT = 0;
-  if (score > best) { best = score; saveBest(); }
+  newBest = score > stats.best;
+  stats.games++;
+  stats.totalScore += score;
+  if (newBest) stats.best = score;
+  saveStats();
+  vib([50, 30, 90]);
 }
 
 function openUpgrade() {
@@ -94,18 +186,21 @@ function openUpgrade() {
 function pickCard(i) {
   const c = cards[i];
   c.apply();
-  taken.push(c.name);
+  taken.push(c.id);
+  stats.upgrades++;
   state = 'play';
   invuln = 1.2;
   bird.vy = -150;
+  vib(25);
 }
 
-function hit(fromGroundOrPipe) {
+function hit() {
   if (p.shield > 0) {
     p.shield--;
     invuln = 1.3;
     bird.vy = p.flap * 0.8;
     if (bird.y + bird.r > H - GROUND) bird.y = H - GROUND - bird.r - 2;
+    vib(40);
   } else {
     die();
   }
@@ -117,6 +212,10 @@ function update(dt) {
   if (state === 'dead') { deadT += dt; }
   if (state === 'upgrade') { upgradeT += dt; }
   if (state !== 'play') return;
+
+  stats.time += dt;
+  saveTimer += dt;
+  if (saveTimer > 10) { saveTimer = 0; saveStats(); }
 
   bird.vy += p.gravity * dt;
   bird.y += bird.vy * dt;
@@ -165,25 +264,78 @@ function update(dt) {
   }
 }
 
+// ===== Buttons =====
+function btn(x, y, w, h, label, color, onClick, active) {
+  return { x, y, w, h, label, color, onClick, active };
+}
+function setLang(l) {
+  settings.lang = l;
+  document.documentElement.lang = l;
+  saveSettings();
+  vib(15);
+}
+function setVibration(v) {
+  settings.vibration = v;
+  saveSettings();
+  if (v) vib(40);
+}
+function getButtons() {
+  if (state === 'menu') return [
+    btn(60, 330, 240, 64, t('play'),     '#59c173', startGame),
+    btn(60, 410, 240, 64, t('stats'),    '#3fa7d6', () => { state = 'stats'; }),
+    btn(60, 490, 240, 64, t('settings'), '#f2a65a', () => { state = 'settings'; }),
+  ];
+  if (state === 'stats') return [
+    btn(80, 545, 200, 56, t('back'), '#9b6bd6', () => { state = 'menu'; }),
+  ];
+  if (state === 'settings') return [
+    btn(30, 180, 140, 56, 'English', '#3fa7d6', () => setLang('en'), settings.lang === 'en'),
+    btn(190, 180, 140, 56, 'Русский', '#3fa7d6', () => setLang('ru'), settings.lang === 'ru'),
+    btn(30, 320, 140, 56, t('on'),  '#59c173', () => setVibration(true),  settings.vibration),
+    btn(190, 320, 140, 56, t('off'), '#e65f5c', () => setVibration(false), !settings.vibration),
+    btn(80, 545, 200, 56, t('back'), '#9b6bd6', () => { state = 'menu'; }),
+  ];
+  if (state === 'dead' && deadT > 0.5) return [
+    btn(60, 455, 240, 60, t('playAgain'), '#59c173', startGame),
+    btn(60, 525, 240, 56, t('menu'),      '#3fa7d6', goMenu),
+  ];
+  return [];
+}
+
 // ===== Input =====
 function tap(gx, gy) {
-  if (state === 'menu') { startGame(); }
-  else if (state === 'play') { bird.vy = p.flap; }
-  else if (state === 'upgrade') {
+  if (state === 'play') {
+    bird.vy = p.flap;
+    stats.flaps++;
+    return;
+  }
+  if (state === 'upgrade') {
     if (upgradeT < 0.6) return; // protection from accidental picks
     for (let i = 0; i < 3; i++) {
       const y = 170 + i * 120;
       if (gx > 30 && gx < W - 30 && gy > y && gy < y + 100) { pickCard(i); return; }
     }
+    return;
   }
-  else if (state === 'dead') { if (deadT > 0.5) startGame(); }
+  for (const b of getButtons()) {
+    if (gx >= b.x && gx <= b.x + b.w && gy >= b.y && gy <= b.y + b.h) {
+      vib(10);
+      b.onClick();
+      return;
+    }
+  }
 }
 window.addEventListener('pointerdown', e => {
   e.preventDefault();
   tap((e.clientX - offX) / scale, (e.clientY - offY) / scale);
 }, { passive: false });
 window.addEventListener('keydown', e => {
-  if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); tap(W / 2, H / 2); }
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    if (state === 'play') tap(W / 2, H / 2);
+    else if (state === 'menu') startGame();
+    else if (state === 'dead' && deadT > 0.5) startGame();
+  }
 });
 window.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -197,16 +349,48 @@ function rr(x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-function txt(s, x, y, size, color, align) {
-  ctx.font = 'bold ' + size + 'px -apple-system, Helvetica, Arial, sans-serif';
+function txt(s, x, y, size, color, align, maxW) {
+  ctx.font = 'bold ' + size + 'px ' + FONT;
   ctx.textAlign = align || 'center';
   ctx.textBaseline = 'middle';
   ctx.lineWidth = Math.max(3, size / 7);
   ctx.strokeStyle = 'rgba(0,0,0,0.55)';
   ctx.lineJoin = 'round';
-  ctx.strokeText(s, x, y);
+  if (maxW) ctx.strokeText(s, x, y, maxW); else ctx.strokeText(s, x, y);
   ctx.fillStyle = color || '#fff';
-  ctx.fillText(s, x, y);
+  if (maxW) ctx.fillText(s, x, y, maxW); else ctx.fillText(s, x, y);
+}
+function wrapList(items, maxW, size) {
+  ctx.font = 'bold ' + size + 'px ' + FONT;
+  const lines = [];
+  let cur = '';
+  for (const it of items) {
+    const tryS = cur ? cur + ', ' + it : it;
+    if (cur && ctx.measureText(tryS).width > maxW) { lines.push(cur + ','); cur = it; }
+    else cur = tryS;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+function fmtTime(sec) {
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  if (h > 0) return h + t('h') + ' ' + m + t('m');
+  if (m > 0) return m + t('m') + ' ' + s + t('s');
+  return s + t('s');
+}
+
+function drawButtons() {
+  for (const b of getButtons()) {
+    ctx.globalAlpha = b.active === false ? 0.45 : 1;
+    ctx.fillStyle = b.color;
+    rr(b.x, b.y, b.w, b.h, 16); ctx.fill();
+    ctx.strokeStyle = b.active === true ? '#fff' : 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = b.active === true ? 4 : 2.5;
+    ctx.stroke();
+    txt(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1, 24, '#fff', 'center', b.w - 20);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawBird(x, y, vy, r) {
@@ -270,8 +454,8 @@ function draw() {
 
   // bird
   if (state === 'menu') {
-    drawBird(W / 2, H / 2 - 40 + Math.sin(time * 4) * 8, 0, 13);
-  } else {
+    drawBird(W / 2, 270 + Math.sin(time * 4) * 8, 0, 13);
+  } else if (state === 'play' || state === 'upgrade' || state === 'dead') {
     const blink = invuln > 0 && Math.floor(time * 12) % 2 === 0;
     if (!blink || state !== 'play') drawBird(bird.x, bird.y, bird.vy, bird.r);
     if (p.shield > 0 && state !== 'dead') {
@@ -284,41 +468,86 @@ function draw() {
   // HUD
   if (state === 'play' || state === 'upgrade') {
     txt(String(score), W / 2, 60, 48);
-    if (p.shield > 0) txt('Shield x' + p.shield, 14, 110, 16, '#bfe9ff', 'left');
+    if (p.shield > 0) txt(t('shieldHud', p.shield), 14, 110, 16, '#bfe9ff', 'left');
     const next = 5 - (score % 5);
-    txt('Upgrade in ' + next, W - 14, 24, 14, '#fff', 'right');
+    txt(t('upgradeIn', next), W - 14, 24, 14, '#fff', 'right', 200);
   }
 
+  // main menu
   if (state === 'menu') {
-    txt('FLAPPY', W / 2, 150, 54, '#fff');
-    txt('ROGUE', W / 2, 205, 54, '#f7d44a');
-    txt('Tap to start', W / 2, 400, 26, '#fff');
-    txt('Best: ' + best, W / 2, 440, 20, '#fff');
+    txt('FLAPPY', W / 2, 100, 54, '#fff');
+    txt('ROGUE', W / 2, 155, 54, '#f7d44a');
+    txt(t('best', stats.best), W / 2, 215, 20, '#fff');
+    drawButtons();
+    txt(VERSION, W - 10, H - 14, 13, '#fff', 'right');
   }
 
+  // statistics
+  if (state === 'stats') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
+    txt(t('stats'), W / 2, 70, 36, '#fff', 'center', 320);
+    const avg = stats.games ? (stats.totalScore / stats.games).toFixed(1) : '0';
+    const rows = [
+      [t('st_best'), stats.best],
+      [t('st_games'), stats.games],
+      [t('st_total'), stats.totalScore],
+      [t('st_avg'), avg],
+      [t('st_upgrades'), stats.upgrades],
+      [t('st_flaps'), stats.flaps],
+      [t('st_time'), fmtTime(stats.time)],
+    ];
+    for (let i = 0; i < rows.length; i++) {
+      const y = 140 + i * 56;
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(30, y + 26, W - 60, 1.5);
+      txt(rows[i][0], 36, y, 18, '#cde', 'left', 200);
+      txt(String(rows[i][1]), W - 36, y, 22, '#f7d44a', 'right', 120);
+    }
+    drawButtons();
+  }
+
+  // settings
+  if (state === 'settings') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
+    txt(t('settings'), W / 2, 70, 36, '#fff', 'center', 320);
+    txt(t('language'), W / 2, 150, 22, '#cde');
+    txt(t('vibration'), W / 2, 290, 22, '#cde');
+    if (!navigator.vibrate) txt(t('noVib'), W / 2, 405, 14, '#ffb4a8', 'center', 320);
+    drawButtons();
+    txt(VERSION, W - 10, H - 14, 13, '#fff', 'right');
+  }
+
+  // upgrade choice
   if (state === 'upgrade') {
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
-    txt('Choose an upgrade', W / 2, 120, 28);
+    txt(t('chooseUpgrade'), W / 2, 120, 28, '#fff', 'center', 320);
     for (let i = 0; i < 3; i++) {
       const c = cards[i], y = 170 + i * 120;
       ctx.fillStyle = c.color;
       rr(30, y, W - 60, 100, 16); ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 3; ctx.stroke();
-      txt(c.name, W / 2, y + 36, 26);
-      txt(c.desc, W / 2, y + 70, 17);
+      txt(t('up_' + c.id + '_n'), W / 2, y + 36, 26, '#fff', 'center', W - 90);
+      txt(t('up_' + c.id + '_d'), W / 2, y + 70, 17, '#fff', 'center', W - 90);
     }
   }
 
+  // game over
   if (state === 'dead') {
     ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
-    txt('Game Over', W / 2, 170, 44, '#fff');
-    txt('Score: ' + score, W / 2, 245, 32, '#f7d44a');
-    txt('Best: ' + best, W / 2, 290, 22);
+    txt(t('gameOver'), W / 2, 140, 42, '#fff', 'center', 320);
+    txt(t('score', score), W / 2, 205, 32, '#f7d44a', 'center', 320);
+    txt(t('best', stats.best), W / 2, 245, 22, '#fff', 'center', 320);
+    if (newBest) txt(t('newBest'), W / 2, 280, 22, '#7dff8a', 'center', 320);
     if (taken.length) {
-      txt('Upgrades:', W / 2, 345, 16, '#cde');
-      txt(taken.join(', '), W / 2, 370, 14, '#fff');
+      txt(t('upgradesLbl'), W / 2, 325, 16, '#cde');
+      const names = taken.map(id => t('up_' + id + '_n'));
+      const lines = wrapList(names, 320, 14);
+      for (let i = 0; i < Math.min(lines.length, 4); i++) {
+        const last = i === 3 && lines.length > 4;
+        txt(last ? lines[i] + ' ...' : lines[i], W / 2, 350 + i * 20, 14, '#fff', 'center', 330);
+      }
     }
-    if (deadT > 0.5) txt('Tap to retry', W / 2, 470, 28);
+    drawButtons();
   }
 
   ctx.restore();
@@ -333,6 +562,7 @@ function frame(ts) {
   draw();
   requestAnimationFrame(frame);
 }
+document.documentElement.lang = settings.lang;
 requestAnimationFrame(frame);
 </script>
 </body>
