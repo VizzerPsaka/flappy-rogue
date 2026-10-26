@@ -45,7 +45,7 @@ function saveBest() { try { localStorage.setItem('flappyrogue_best', best); } ca
 
 // ===== Game state =====
 let state = 'menu'; // menu | play | upgrade | dead
-let bird, pipes, score, spawnT, invuln, deadT, cards, p, taken, time = 0;
+let bird, pipes, score, spawnT, invuln, deadT, cards, p, taken, time = 0, upgradeT = 0;
 
 const BASE = { gravity: 1500, flap: -430, gap: 150, speed: 130, shield: 0 };
 
@@ -82,6 +82,7 @@ function die() {
 
 function openUpgrade() {
   state = 'upgrade';
+  upgradeT = 0;
   const pool = POOL.slice();
   cards = [];
   for (let i = 0; i < 3; i++) {
@@ -114,6 +115,7 @@ function hit(fromGroundOrPipe) {
 function update(dt) {
   time += dt;
   if (state === 'dead') { deadT += dt; }
+  if (state === 'upgrade') { upgradeT += dt; }
   if (state !== 'play') return;
 
   bird.vy += p.gravity * dt;
@@ -126,7 +128,7 @@ function update(dt) {
   // spawn pipes
   spawnT -= dt;
   if (spawnT <= 0) {
-    spawnT = 1.6;
+    spawnT = 208 / p.speed; // constant distance between pipes
     const margin = 50;
     const minC = margin + p.gap / 2;
     const maxC = H - GROUND - margin - p.gap / 2;
@@ -168,6 +170,7 @@ function tap(gx, gy) {
   if (state === 'menu') { startGame(); }
   else if (state === 'play') { bird.vy = p.flap; }
   else if (state === 'upgrade') {
+    if (upgradeT < 0.6) return; // protection from accidental picks
     for (let i = 0; i < 3; i++) {
       const y = 170 + i * 120;
       if (gx > 30 && gx < W - 30 && gy > y && gy < y + 100) { pickCard(i); return; }
